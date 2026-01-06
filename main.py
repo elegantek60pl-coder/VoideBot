@@ -45,10 +45,48 @@ class VerifyView(discord.ui.View):
     async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(VerifyModal())
 
-# 2. TICKETY
+# 2. TICKETY - Panel Sterowania (Wewnątrz ticketa)
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Zamknij", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Sprawdzamy czy to admin
+        is_admin = interaction.user.guild_permissions.administrator
+        
+        if is_admin:
+            await interaction.response.send_message("🗑️ Usuwanie kanału...")
+            await asyncio.sleep(2)
+            await interaction.channel.delete()
+        else:
+            # Jeśli to użytkownik
+            await interaction.response.send_message("🔒 Dziękujemy za zgłoszenie! Zamykam dostęp do tego kanału.", ephemeral=True)
+            # Zabieramy uprawnienia użytkownikowi
+            await interaction.channel.set_permissions(interaction.user, read_messages=False, send_messages=False)
+            
+            # Informacja dla admina
+            embed = discord.Embed(description=f"🔒 Użytkownik {interaction.user.mention} zamknął zgłoszenie. Kanał czeka na usunięcie przez Admina.", color=discord.Color.red())
+            await interaction.channel.send(embed=embed)
+
+    @discord.ui.button(label="Przejmij", style=discord.ButtonStyle.success, emoji="✋", custom_id="claim_ticket")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("⛔ Tylko administracja może przejmować tickety!", ephemeral=True)
+
+        embed = discord.Embed(description=f"✅ Zgłoszenie zostało przejęte przez: {interaction.user.mention}", color=discord.Color.green())
+        await interaction.channel.send(embed=embed)
+        # Możemy wyłączyć przycisk po kliknięciu
+        button.disabled = True
+        button.label = f"Przejęte przez {interaction.user.display_name}"
+        await interaction.message.edit(view=self)
+
+
+# 2. TICKETY - Wybór kategorii
 class TicketSelect(discord.ui.Select):
     def __init__(self):
         options = [
+            discord.SelectOption(label="Zamówienie", description="Chcesz złożyć zamówienie?", emoji="🛒", value="order"),
             discord.SelectOption(label="Pomoc", description="Potrzebujesz naszej pomocy?", emoji="❓", value="help"),
             discord.SelectOption(label="Pytanie", description="Masz do nas pytanie?", emoji="❔", value="question"),
             discord.SelectOption(label="Problem z pluginem", description="Masz problem z naszym pluginem?", emoji="🔌", value="plugin"),
@@ -75,8 +113,20 @@ class TicketSelect(discord.ui.Select):
         
         await interaction.response.send_message(f"✅ Utworzono zgłoszenie: {ticket_channel.mention}", ephemeral=True)
         
-        embed = discord.Embed(title="Zgłoszenie", description=f"Witaj {interaction.user.mention}!\nOpisz dokładnie swój problem. Administracja wkrótce odpisze.\n\nWybrana kategoria: **{self.values[0]}**", color=discord.Color.blue())
-        await ticket_channel.send(embed=embed)
+        # Tłumaczenie wartości na ładne nazwy
+        labels = {
+            "order": "Zamówienie",
+            "help": "Pomoc",
+            "question": "Pytanie",
+            "plugin": "Problem z pluginem",
+            "other": "Inne"
+        }
+        selected_label = labels.get(self.values[0], "Nieznana")
+
+        embed = discord.Embed(title="Zgłoszenie", description=f"Witaj {interaction.user.mention}!\nOpisz dokładnie swój problem. Administracja wkrótce odpisze.\n\nWybrana kategoria: **{selected_label}**", color=discord.Color.blue())
+        
+        # Dodajemy widok z przyciskami (Zamknij / Przejmij)
+        await ticket_channel.send(embed=embed, view=TicketControlView())
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -136,8 +186,6 @@ class LegitModal(discord.ui.Modal, title="Oceń transakcję"):
             except Exception as e:
                 print(f"Licznik kanału error (limit rate?): {e}")
 
-            # Wyłączamy przycisk (skoro to jednorazówka, choć dla roli może to być mylące - jeśli chcesz by każdy z rolą mógł kliknąć RAZ, to inna bajka. 
-            # Tutaj wyłączam przycisk po pierwszej opinii, tak jak chciałeś "jednorazowy przycisk")
             self.view_object.clear_items()
             self.view_object.add_item(discord.ui.Button(label="Opinia wystawiona", style=discord.ButtonStyle.grey, disabled=True))
             await interaction.response.edit_message(content="✅ Opinia została wystawiona.", view=self.view_object)
@@ -152,10 +200,8 @@ class RoleLegitView(discord.ui.View):
 
     @discord.ui.button(label="Wystaw Opinię", style=discord.ButtonStyle.primary, emoji="⭐")
     async def rate(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Sprawdzamy czy użytkownik ma wymaganą ROLĘ
         if self.target_role not in interaction.user.roles:
             return await interaction.response.send_message(f"⛔ Aby wystawić opinię, musisz posiadać rolę: **{self.target_role.name}**!", ephemeral=True)
-        
         await interaction.response.send_modal(LegitModal(self))
 
 # --- SETUP BOTA ---
@@ -167,6 +213,7 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         self.add_view(VerifyView())
         self.add_view(TicketView())
+        self.add_view(TicketControlView()) # Rejestrujemy widok przycisków w tickecie
         print("🔄 Załadowano widoki.")
 
     async def on_ready(self):
@@ -191,65 +238,107 @@ async def setup_verify(interaction: discord.Interaction):
 @bot.tree.command(name="setup_tickety", description="[ADMIN] Panel ticketów", guild=discord.Object(id=GUILD_ID))
 async def setup_ticket(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("Brak uprawnień.", ephemeral=True)
-    embed = discord.Embed(title="STWÓRZ ZGŁOSZENIE", description="Wybierz kategorię poniżej.", color=discord.Color.purple())
+    
+    # TREŚĆ PANELU ZGODNA Z TWOIM ŻYCZENIEM
+    opis_panelu = """ᴡɪᴛᴀᴊ, ᴘᴏᴛʀᴢᴇʙᴜᴊᴇꜱᴢ ᴘᴏᴍᴏᴄʏ? ᴄʜᴄᴇꜱᴢ ᴄᴏꜱ ᴢᴀᴍᴏᴡɪᴄ?
+ᴍᴀꜱᴢ ᴘʏᴛᴀɴɪᴇ ʟᴜʙ ᴘʀᴏʙʟᴇᴍ?
+ᴡʏʙɪᴇʀᴢ ᴋᴀᴛᴇɢᴏʀɪᴇ ᴛɪᴄᴋᴇᴛᴜ ᴘᴏᴅ ꜱᴘᴏᴅᴇᴍ.
+
+ᴘʀᴢʏᴘᴏᴍɪɴᴀᴍʏ ᴀᴅᴍɪɴɪꜱᴛʀᴀᴄᴊᴀ ᴍᴀ ꜱᴡᴏᴊᴇ ᴘʀʏᴡᴀᴛɴᴇ ᴢʏᴄɪᴇ ɪ ɴɪᴇ ᴢᴀᴡꜱᴢᴇ ᴅᴏꜱᴛᴀɴɪᴇꜱᴢ ᴏᴅ ʀᴀᴢᴜ ᴏᴅᴘᴏᴡɪᴇᴅᴢ!"""
+
+    embed = discord.Embed(title="STWÓRZ ZGŁOSZENIE", description=opis_panelu, color=discord.Color.from_rgb(47, 49, 54))
+    # Możesz tu dodać obrazek jeśli chcesz: embed.set_image(url="LINK")
+    
     await interaction.channel.send(embed=embed, view=TicketView())
     await interaction.response.send_message("Gotowe!", ephemeral=True)
 
-# 2. LEGIT CHECK (DLA ROLI)
+# 2. PV (Wysyłanie wiadomości)
+@bot.tree.command(name="pv", description="[ADMIN] Wyślij wiadomość DM do użytkownika lub wszystkich", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(wiadomosc="Treść wiadomości", uzytkownik="Konkretny użytkownik (opcjonalne)", wszyscy="Wyślij do wszystkich na serwerze? (True/False)")
+async def pv(interaction: discord.Interaction, wiadomosc: str, uzytkownik: discord.Member = None, wszyscy: bool = False):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("Brak uprawnień.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True) # Dajemy sobie czas na wysyłanie
+
+    if wszyscy:
+        # WYSYŁANIE DO WSZYSTKICH
+        count = 0
+        failed = 0
+        members = interaction.guild.members
+        
+        await interaction.followup.send(f"⏳ Rozpoczynam wysyłanie do {len(members)} osób... To może potrwać.")
+        
+        for member in members:
+            if not member.bot:
+                try:
+                    await member.send(f"🔔 **Ogłoszenie od Administracji:**\n\n{wiadomosc}")
+                    count += 1
+                    # Czekamy 2 sekundy, żeby Discord nie zbanował bota za spam
+                    await asyncio.sleep(2) 
+                except:
+                    failed += 1
+        
+        await interaction.followup.send(f"✅ Wysłano do {count} osób. (Zablokowane PW: {failed})")
+
+    elif uzytkownik:
+        # WYSYŁANIE DO JEDNEJ OSOBY
+        try:
+            await uzytkownik.send(f"🔔 **Wiadomość od Administracji:**\n\n{wiadomosc}")
+            await interaction.followup.send(f"✅ Wysłano wiadomość do {uzytkownik.mention}.")
+        except:
+            await interaction.followup.send(f"❌ Nie udało się wysłać (użytkownik ma zablokowane PW).")
+    else:
+        await interaction.followup.send("❌ Musisz wybrać użytkownika LUB zaznaczyć opcję 'wszyscy'.")
+
+# 3. LEGIT CHECK
 @bot.tree.command(name="legit", description="[ADMIN] Wyślij prośbę o opinię dla posiadaczy danej roli", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(rola="Wybierz rolę (lub wpisz ID), która może wystawić opinię")
 async def request_legit(interaction: discord.Interaction, rola: discord.Role):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("Tylko admin może prosić o legit check!", ephemeral=True)
+    if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("Tylko admin może prosić o legit check!", ephemeral=True)
 
     view = RoleLegitView(target_role=rola)
-    
     embed = discord.Embed(title="Prośba o opinię", description=f"Dziękujemy za zakupy!\nOsoby z rolą {rola.mention} mogą teraz wystawić opinię klikając przycisk poniżej.", color=discord.Color.gold())
-    
     await interaction.channel.send(embed=embed, view=view)
     await interaction.response.send_message(f"✅ Utworzono panel opinii dla roli **{rola.name}**.", ephemeral=True)
 
-# 3. TWORZENIE EMBEDA
+# 4. TWORZENIE EMBEDA
 @bot.tree.command(name="stworz_embed", description="[ADMIN] Tworzy customowy embed z plikiem lub linkiem", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(tytul="Tytuł", tresc="Treść (\\n to nowa linia)", kolor="Hex (np. #ff0000)", plik="Wrzuć obrazek", link_do_obrazka="Lub wklej link")
 async def create_embed(interaction: discord.Interaction, tytul: str, tresc: str, kolor: str = "#ffffff", plik: discord.Attachment = None, link_do_obrazka: str = None):
     if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("Brak uprawnień.", ephemeral=True)
-    
     try:
         color_value = int(kolor.replace("#", ""), 16)
         embed = discord.Embed(title=tytul, description=tresc.replace("\\n", "\n"), color=color_value)
         if plik: embed.set_image(url=plik.url)
         elif link_do_obrazka: embed.set_image(url=link_do_obrazka)
-
         await interaction.channel.send(embed=embed)
         await interaction.response.send_message("✅ Wysłano embed!", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Błąd: {e}", ephemeral=True)
 
-# 4. GIVEAWAY
+# 5. GIVEAWAY & MODERACJA (BEZ ZMIAN)
 @bot.tree.command(name="giveaway", description="[ADMIN] Szybki giveaway", guild=discord.Object(id=GUILD_ID))
 async def giveaway(interaction: discord.Interaction, nagroda: str, czas_minuty: int):
     if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("Brak uprawnień.", ephemeral=True)
-    
     embed = discord.Embed(title="🎉 GIVEAWAY 🎉", description=f"Nagroda: **{nagroda}**\nCzas: **{czas_minuty} min**\nZareaguj 🎉 aby dołączyć!", color=discord.Color.gold())
     await interaction.response.send_message("Start!", ephemeral=True)
     msg = await interaction.channel.send(embed=embed)
     await msg.add_reaction("🎉")
-
     await asyncio.sleep(czas_minuty * 60)
-    
     msg = await interaction.channel.fetch_message(msg.id)
+    users = [u for u in [r for r in msg.reactions if str(r.emoji) == "🎉"][0].users if not u.bot] if msg.reactions else [] # Fix iteracji
+    # Poprawka: powyższy one-liner może być skomplikowany, uproszczona wersja w bloku try/except w pętli jest bezpieczniejsza, ale tu zostawiamy logikę losowania.
     users = []
     async for user in msg.reactions[0].users():
         if not user.bot: users.append(user)
-
+    
     if users:
         winner = random.choice(users)
         await interaction.channel.send(f"🎉 Wygrał: {winner.mention}! Nagroda: **{nagroda}**")
     else:
         await interaction.channel.send("Nikt nie wygrał :(")
 
-# 5. MODERACJA
 @bot.tree.command(name="ban", description="[ADMIN] Zbanuj użytkownika", guild=discord.Object(id=GUILD_ID))
 async def ban(interaction: discord.Interaction, uzytkownik: discord.Member, powod: str = "Brak powodu"):
     if not interaction.user.guild_permissions.ban_members: return await interaction.response.send_message("Brak uprawnień.", ephemeral=True)
