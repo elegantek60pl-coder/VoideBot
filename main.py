@@ -11,7 +11,7 @@ import asyncio
 # Ładujemy zmienne
 load_dotenv()
 
-# --- KONFIGURACJA (ZAKTUALIZOWANA) ---
+# --- KONFIGURACJA ---
 TOKEN = os.environ.get("TOKEN")
 
 GUILD_ID = 1457834566617403484
@@ -24,33 +24,24 @@ ROLE_ID_ACCESS = 1457834566617403487
 # --- KOLOR ---
 THEME_COLOR = discord.Color.from_str("#681CFD")
 
-# --- ZMIENNE GLOBALNE ---
-active_codes = {} # Tutaj trzymamy kody rabatowe: { "KOD": { "percent": 10, "expires": timestamp } }
+# --- ZMIENNE GLOBALNE (KODY) ---
+active_codes = {} 
 
 # --- POMOCNICZE FUNKCJE ---
-def convert_time_to_seconds(time_str):
-    """Zamienia tekst np. '1h' na sekundy"""
-    unit = time_str[-1:].lower() # Ostatni znak (np. 'h')
-    try:
-        val = int(time_str[:-1]) # Liczba (np. 1)
-    except:
-        if time_str.isdigit(): return int(time_str) # Jeśli podano samą liczbę, uznaj jako sekundy
-        return None
-
-    if unit == 's': return val
-    elif unit == 'm': return val * 60
-    elif unit == 'h': return val * 3600
-    elif unit == 'd': return val * 86400
-    elif unit == 'o': return val * 2592000 # 'ms' jako miesiąc (oznaczenie 'o' w kodzie dla uproszczenia parsowania, ale obsłużymy 'ms' w komendzie)
-    elif unit == 'r': return val * 31536000
-    return None
-
 def parse_duration_input(time_str):
-    # Obsługa 'ms' jako miesiąc
-    if time_str.endswith("ms"):
-        return int(time_str[:-2]) * 2592000
-    return convert_time_to_seconds(time_str)
-
+    unit = time_str[-1:].lower()
+    try: val = int(time_str[:-1])
+    except: return int(time_str) if time_str.isdigit() else None
+    
+    seconds = 0
+    if unit == 's': seconds = val
+    elif unit == 'm': seconds = val * 60
+    elif unit == 'h': seconds = val * 3600
+    elif unit == 'd': seconds = val * 86400
+    elif unit == 'r': seconds = val * 31536000
+    elif unit == 's' and time_str.endswith("ms"): seconds = int(time_str[:-2]) * 2592000 # miesiąc
+    else: return None
+    return seconds
 
 # --- WIDOKI I KLASY ---
 
@@ -75,46 +66,55 @@ class VerifyView(discord.ui.View):
 class GiveawayView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        # Używamy ID wiadomości jako klucza, żeby rozróżnić konkursy, ale tutaj uprościmy
-        # W prawdziwej bazie danych zapisywalibyśmy uczestników. Tutaj:
-        # Ponieważ widok jest 'stateless' (bezstanowy) po restarcie, musimy polegać na reakcjach lub innej metodzie.
-        # Jednak dla prostoty użyjemy przycisku, który dodaje ID usera do listy w pamięci bota (resetuje się po restarcie).
-        # Aby to działało lepiej, po prostu dodamy przycisk, który wysyła ephemeral "Dołączyłeś".
-        # Ale żeby losować, musimy zbierać userów.
         self.participants = set()
 
     @discord.ui.button(label="Dołącz", style=discord.ButtonStyle.primary, emoji="🎉", custom_id="join_giveaway")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id in self.participants:
             return await interaction.response.send_message("Już bierzesz udział!", ephemeral=True)
-        
         self.participants.add(interaction.user.id)
-        await interaction.response.send_message("✅ Dołączyłeś do konkursu!", ephemeral=True)
-        # Aktualizujemy licznik na przycisku
+        await interaction.response.send_message("✅ Dołączyłeś!", ephemeral=True)
         button.label = f"Dołącz ({len(self.participants)})"
         await interaction.message.edit(view=self)
 
-# 3. KODY RABATOWE - MODAL
+# 3. KODY RABATOWE - SYSTEM USUWANIA I UŻYWANIA
 class DiscountModal(discord.ui.Modal, title="Wpisz kod rabatowy"):
     code_input = discord.ui.TextInput(label="Kod", placeholder="Np. LATO2024")
-
     async def on_submit(self, interaction: discord.Interaction):
         code = self.code_input.value.strip()
         now = datetime.datetime.now().timestamp()
-
         if code in active_codes:
             data = active_codes[code]
             if data['expires'] > now:
-                # Kod ważny
-                percent = data['percent']
                 embed = discord.Embed(title="✅ Kod Aktywny!", color=discord.Color.green())
-                embed.description = f"Użytkownik {interaction.user.mention} użył kodu **{code}**.\n\n📉 **Zniżka: {percent}%**"
+                embed.description = f"Użytkownik {interaction.user.mention} użył kodu **{code}**.\n\n📉 **Zniżka: {data['percent']}%**"
                 await interaction.channel.send(embed=embed)
                 await interaction.response.send_message("Pomyślnie użyto kodu!", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Ten kod wygasł.", ephemeral=True)
+            else: await interaction.response.send_message("❌ Ten kod wygasł.", ephemeral=True)
+        else: await interaction.response.send_message("❌ Nieprawidłowy kod.", ephemeral=True)
+
+# --- KLASA DO USUWANIA KODÓW (DYNAMICZNE PRZYCISKI) ---
+class DeleteCodeButton(discord.ui.Button):
+    def __init__(self, code_name):
+        super().__init__(label=f"Usuń {code_name}", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id=f"del_{code_name}")
+        self.code_name = code_name
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.code_name in active_codes:
+            del active_codes[self.code_name]
+            await interaction.response.send_message(f"✅ Usunięto kod: **{self.code_name}**", ephemeral=True)
+            # Odświeżamy widok (usuwamy przycisk)
+            self.view.remove_item(self)
+            await interaction.message.edit(view=self.view)
         else:
-            await interaction.response.send_message("❌ Nieprawidłowy kod.", ephemeral=True)
+            await interaction.response.send_message("❌ Ten kod już nie istnieje.", ephemeral=True)
+
+class DeleteCodeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        # Dla każdego aktywnego kodu tworzymy przycisk
+        for code in active_codes:
+            self.add_item(DeleteCodeButton(code))
 
 # 4. TICKET - STEROWANIE
 class TicketControlView(discord.ui.View):
@@ -122,11 +122,18 @@ class TicketControlView(discord.ui.View):
         super().__init__(timeout=None)
         self.is_order = is_order
         
-        # Jeśli to zamówienie, dodajemy przycisk kodu
-        if is_order:
-            self.add_item(self.discount_button)
+        # LOGIKA: Usuwamy przycisk "Użyj Kodu", jeśli to NIE jest zamówienie
+        if not self.is_order:
+            # Szukamy przycisku po custom_id i usuwamy go z listy
+            button_to_remove = None
+            for child in self.children:
+                if hasattr(child, "custom_id") and child.custom_id == "use_code":
+                    button_to_remove = child
+                    break
+            if button_to_remove:
+                self.remove_item(button_to_remove)
 
-    # Definiujemy przycisk kodu jako zmienną, żeby dodać go warunkowo
+    # Przycisk kodu (domyślnie zdefiniowany, usuwany w __init__ jeśli trzeba)
     @discord.ui.button(label="Użyj Kodu", style=discord.ButtonStyle.secondary, emoji="🏷️", custom_id="use_code", row=0)
     async def discount_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(DiscountModal())
@@ -168,22 +175,32 @@ class TicketSelect(discord.ui.Select):
         category = guild.get_channel(CATEGORY_TICKET_ID)
         if not category: return await interaction.response.send_message("❌ Błąd kategorii.", ephemeral=True)
 
+        selected = self.values[0]
+        
+        # Nazewnictwo
+        prefix_map = {"order": "zamowienie", "help": "pomoc", "question": "pytanie", "plugin": "plugin", "other": "inne"}
+        prefix = prefix_map.get(selected, "ticket")
+        
+        count = 1
+        while True:
+            name = f"ticket-{prefix}-{count}"
+            if not discord.utils.get(guild.text_channels, name=name): break
+            count += 1
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
-        channel_name = f"ticket-{interaction.user.name}"
-        ticket_channel = await guild.create_text_channel(name=channel_name, category=category, overwrites=overwrites)
         
-        await interaction.response.send_message(f"✅ Utworzono: {ticket_channel.mention}", ephemeral=True)
+        ticket_channel = await guild.create_text_channel(name=name, category=category, overwrites=overwrites)
+        await interaction.response.send_message(f"✅ Utworzono zgłoszenie: {ticket_channel.mention}", ephemeral=True)
         
-        selected = self.values[0]
-        labels = {"order": "Zamówienie", "help": "Pomoc", "question": "Pytanie", "plugin": "Problem", "other": "Inne"}
+        labels = {"order": "Zamówienie", "help": "Pomoc", "question": "Pytanie", "plugin": "Problem z pluginem", "other": "Inne"}
         
         embed = discord.Embed(title="Zgłoszenie", description=f"Witaj {interaction.user.mention}!\nOpisz sprawę.\nKategoria: **{labels.get(selected)}**", color=THEME_COLOR)
         
-        # SPRAWDZAMY CZY TO ZAMÓWIENIE -> JEŚLI TAK, DAJEMY WIDOK Z KODEM RABATOWYM
+        # KLUCZOWE: PRZEKAZUJEMY INFO CZY TO ZAMÓWIENIE
         is_order_ticket = (selected == "order")
         view = TicketControlView(is_order=is_order_ticket)
         
@@ -195,14 +212,23 @@ class TicketView(discord.ui.View):
         self.add_item(TicketSelect())
 
 # 6. ACCESS VIEW (/nadaj)
+class RejectModal(discord.ui.Modal, title="Powód odrzucenia"):
+    reason = discord.ui.TextInput(label="Powód", style=discord.TextStyle.paragraph)
+    def __init__(self, view, uid): super().__init__(); self.view=view; self.uid=uid
+    async def on_submit(self, interaction):
+        member = interaction.guild.get_member(self.uid)
+        self.view.children[0].disabled=True; self.view.children[1].disabled=True; self.view.children[1].label="Odrzucono"
+        await interaction.message.edit(view=self.view)
+        await interaction.response.send_message(f"❌ Odrzucono. Powód: {self.reason.value}", ephemeral=True)
+        if member: 
+            try: await member.send(f"❌ Weryfikacja odrzucona. Powód: {self.reason.value}")
+            except: pass
+
 class AccessView(discord.ui.View):
     def __init__(self, target_user_id):
         super().__init__(timeout=None)
         self.target_user_id = target_user_id
-    
-    # ... (Tu kod z poprzedniej odpowiedzi, Modal odrzucania itp. Dla oszczędności miejsca skróciłem, ale wklej pełny z poprzedniej odpowiedzi jeśli chcesz modale odrzucania) ...
-    # Zostawiam wersję z Modalami odrzucania dla kompletności:
-    
+
     @discord.ui.button(label="Nadaj dostęp", style=discord.ButtonStyle.success, emoji="✅", custom_id="access_grant")
     async def grant(self, interaction: discord.Interaction, button):
         if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔ Tylko Admin", ephemeral=True)
@@ -222,17 +248,6 @@ class AccessView(discord.ui.View):
         if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔ Tylko Admin", ephemeral=True)
         await interaction.response.send_modal(RejectModal(self, self.target_user_id))
 
-class RejectModal(discord.ui.Modal, title="Powód odrzucenia"):
-    reason = discord.ui.TextInput(label="Powód", style=discord.TextStyle.paragraph)
-    def __init__(self, view, uid): super().__init__(); self.view=view; self.uid=uid
-    async def on_submit(self, interaction):
-        member = interaction.guild.get_member(self.uid)
-        self.view.children[0].disabled=True; self.view.children[1].disabled=True; self.view.children[1].label="Odrzucono"
-        await interaction.message.edit(view=self.view)
-        await interaction.response.send_message(f"❌ Odrzucono. Powód: {self.reason.value}", ephemeral=True)
-        if member: 
-            try: await member.send(f"❌ Weryfikacja odrzucona. Powód: {self.reason.value}")
-            except: pass
 
 # 7. LEGIT CHECK
 class LegitModal(discord.ui.Modal, title="Oceń transakcję"):
@@ -258,6 +273,7 @@ class LegitModal(discord.ui.Modal, title="Oceń transakcję"):
             self.view.clear_items(); self.view.add_item(discord.ui.Button(label="Wystawiono", disabled=True))
             await itr.response.edit_message(content="✅ Dzięki!", view=self.view)
         except: await itr.response.send_message("❌ Liczby 1-10!", ephemeral=True)
+
 class RoleLegitView(discord.ui.View):
     def __init__(self, r): super().__init__(timeout=None); self.r=r
     @discord.ui.button(label="Oceń", style=discord.ButtonStyle.primary, emoji="⭐")
@@ -272,8 +288,8 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         self.add_view(VerifyView())
         self.add_view(TicketView())
-        self.add_view(TicketControlView(is_order=False)) # Rejestrujemy ogólny
-        self.add_view(TicketControlView(is_order=True))  # Rejestrujemy ten z kodem
+        self.add_view(TicketControlView(is_order=False)) 
+        self.add_view(TicketControlView(is_order=True))
         print("🔄 Widoki OK.")
     async def on_ready(self):
         await self.wait_until_ready()
@@ -284,91 +300,78 @@ bot = MyBot()
 
 # --- KOMENDY ---
 
-# 1. KONKURS (GIVEAWAY)
+# 1. KONKURS
 @bot.tree.command(name="konkurs", description="[ADMIN] Rozpocznij giveaway", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(nagroda="Co można wygrać?", czas="Ile czasu? (np. 1h, 30m)", ile_osob="Ilu zwycięzców?")
 async def konkurs(interaction: discord.Interaction, nagroda: str, czas: str, ile_osob: int = 1):
     if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
-    
     seconds = parse_duration_input(czas)
-    if not seconds:
-        return await interaction.response.send_message("❌ Nieprawidłowy format czasu! Użyj np. `1h`, `30m`, `1d`.", ephemeral=True)
-
-    # Koniec czasu timestamp
+    if not seconds: return await interaction.response.send_message("❌ Zły czas (1h, 30m).", ephemeral=True)
     end_time = datetime.datetime.now() + datetime.timedelta(seconds=seconds)
-    timestamp = int(end_time.timestamp())
+    ts = int(end_time.timestamp())
 
     embed = discord.Embed(title="🎉 KONKURS 🎉", description=f"Do wygrania: **{nagroda}**", color=THEME_COLOR)
-    embed.add_field(name="⏳ Koniec", value=f"<t:{timestamp}:R> (<t:{timestamp}:F>)", inline=False)
+    embed.add_field(name="⏳ Koniec", value=f"<t:{ts}:R> (<t:{ts}:F>)", inline=False)
     embed.add_field(name="🏆 Zwycięzców", value=str(ile_osob), inline=True)
-    embed.set_footer(text="Kliknij przycisk, aby dołączyć!")
-
-    view = GiveawayView()
-    await interaction.response.send_message("Rozpoczynam konkurs!", ephemeral=True)
-    msg = await interaction.channel.send(embed=embed, view=view)
-
-    # Czekamy
-    await asyncio.sleep(seconds)
-
-    # Losowanie
-    participants_list = list(view.participants)
     
-    if len(participants_list) < ile_osob:
-        await interaction.channel.send(f"❌ Konkurs na **{nagroda}** anulowany - zbyt mało uczestników.")
+    view = GiveawayView()
+    await interaction.response.send_message("Start!", ephemeral=True)
+    msg = await interaction.channel.send(embed=embed, view=view)
+    await asyncio.sleep(seconds)
+    
+    parts = list(view.participants)
+    if len(parts) < ile_osob: await interaction.channel.send(f"❌ Anulowano: za mało osób ({len(parts)}).")
     else:
-        winners = random.sample(participants_list, ile_osob)
-        winners_mentions = ", ".join([f"<@{uid}>" for uid in winners])
-        
-        win_embed = discord.Embed(title="🎉 WYNIKI KONKURSU 🎉", color=discord.Color.gold())
-        win_embed.description = f"Nagroda: **{nagroda}**\n\n🏆 **Zwycięzcy:** {winners_mentions}"
-        win_embed.set_footer(text=f"Gratulacje!")
-        
-        await interaction.channel.send(content=winners_mentions, embed=win_embed)
-        
-    # Edytujemy stary embed, że zakończony
-    embed.title = "🎉 KONKURS ZAKOŃCZONY 🎉"
-    embed.color = discord.Color.dark_gray()
-    view.children[0].disabled = True
+        wins = random.sample(parts, ile_osob)
+        men = ", ".join([f"<@{u}>" for u in wins])
+        e = discord.Embed(title="🎉 WYNIKI 🎉", description=f"Nagroda: **{nagroda}**\n🏆 **{men}**", color=discord.Color.gold())
+        await interaction.channel.send(content=men, embed=e)
+    
+    embed.title="🎉 ZAKOŃCZONY 🎉"; embed.color=discord.Color.dark_gray()
+    view.children[0].disabled=True
     await msg.edit(embed=embed, view=view)
 
-
-# 2. KODY RABATOWE
+# 2. KODY RABATOWE - USTAWIENIE
 @bot.tree.command(name="ustaw_kod", description="[ADMIN] Dodaj kod rabatowy", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(kod="Treść kodu (np. LATO)", czas="Czas działania (s,m,h,d,ms,r)", procent="Wartość zniżki (%)")
 async def ustaw_kod(interaction: discord.Interaction, kod: str, czas: str, procent: int):
-    if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
-
+    if not interaction.user.guild_permissions.administrator: return
     seconds = parse_duration_input(czas)
-    if not seconds:
-        return await interaction.response.send_message("❌ Zły format czasu! (s, m, h, d, ms, r)", ephemeral=True)
-
-    expiry = datetime.datetime.now().timestamp() + seconds
+    if not seconds: return await interaction.response.send_message("❌ Zły czas", ephemeral=True)
     
-    # Zapisujemy kod
-    active_codes[kod] = {
-        "percent": procent,
-        "expires": expiry
-    }
-
-    embed = discord.Embed(title="✅ Ustawiono Kod Rabatowy", color=discord.Color.green())
-    embed.add_field(name="Kod", value=kod, inline=True)
-    embed.add_field(name="Zniżka", value=f"{procent}%", inline=True)
-    embed.add_field(name="Wygasa", value=f"<t:{int(expiry)}:R>", inline=False)
+    active_codes[kod] = {"percent": procent, "expires": datetime.datetime.now().timestamp() + seconds}
     
-    await interaction.response.send_message(embed=embed)
+    e = discord.Embed(title="✅ Kod Rabatowy", color=discord.Color.green())
+    e.add_field(name="Kod", value=kod); e.add_field(name="Zniżka", value=f"{procent}%")
+    await interaction.response.send_message(embed=e)
 
+# 3. KODY RABATOWE - USUWANIE
+@bot.tree.command(name="usun_kod", description="[ADMIN] Panel usuwania kodów", guild=discord.Object(id=GUILD_ID))
+async def usun_kod(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
+    
+    if not active_codes:
+        return await interaction.response.send_message("🚫 Nie ma żadnych aktywnych kodów.", ephemeral=True)
+    
+    embed = discord.Embed(title="🗑️ Panel usuwania kodów", description="Kliknij przycisk, aby usunąć kod.", color=discord.Color.red())
+    # Wypisujemy listę
+    desc = ""
+    for c, d in active_codes.items():
+        desc += f"• **{c}** ({d['percent']}%) - Wygasa <t:{int(d['expires'])}:R>\n"
+    embed.add_field(name="Aktywne kody:", value=desc)
+    
+    view = DeleteCodeView()
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-# 3. POZOSTAŁE (NADAJ, SETUPY, PV...)
-@bot.tree.command(name="nadaj", description="[ADMIN] Panel nadawania dostępu", guild=discord.Object(id=GUILD_ID))
+# 4. POZOSTAŁE
+@bot.tree.command(name="nadaj", guild=discord.Object(id=GUILD_ID))
 async def nadaj(interaction: discord.Interaction, uzytkownik: discord.Member, zrzut_ekranu: discord.Attachment):
-    if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔", ephemeral=True)
-    embed = discord.Embed(title="VoidCode - Darmowe Skrypty/Pluginy", color=THEME_COLOR)
-    embed.description = f"**Autor:** {uzytkownik.mention}"; embed.set_image(url=zrzut_ekranu.url)
-    embed.set_footer(text=f"ID: {interaction.id} • {datetime.datetime.now().strftime('%H:%M')}")
-    await interaction.channel.send(embed=embed, view=AccessView(uzytkownik.id))
-    await interaction.response.send_message("✅", ephemeral=True)
+    if not interaction.user.guild_permissions.administrator: return
+    e = discord.Embed(title="VoidCode - Weryfikacja", color=THEME_COLOR)
+    e.description = f"**Autor:** {uzytkownik.mention}"; e.set_image(url=zrzut_ekranu.url)
+    e.set_footer(text=f"ID: {interaction.id}")
+    await interaction.channel.send(embed=e, view=AccessView(uzytkownik.id)); await interaction.response.send_message("✅", ephemeral=True)
 
-@bot.tree.command(name="setup_tickety", description="Setup Ticketów", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="setup_tickety", guild=discord.Object(id=GUILD_ID))
 async def setup_ticket(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator: return
     desc = """ᴡɪᴛᴀᴊ, ᴘᴏᴛʀᴢᴇʙᴜᴊᴇꜱᴢ ᴘᴏᴍᴏᴄʏ? ᴄʜᴄᴇꜱᴢ ᴄᴏꜱ ᴢᴀᴍᴏᴡɪᴄ?
@@ -376,21 +379,18 @@ async def setup_ticket(interaction: discord.Interaction):
 ᴡʏʙɪᴇʀᴢ ᴋᴀᴛᴇɢᴏʀɪᴇ ᴛɪᴄᴋᴇᴛᴜ ᴘᴏᴅ ꜱᴘᴏᴅᴇᴍ.
 
 ᴘʀᴢʏᴘᴏᴍɪɴᴀᴍʏ ᴀᴅᴍɪɴɪꜱᴛʀᴀᴄᴊᴀ ᴍᴀ ꜱᴡᴏᴊᴇ ᴘʀʏᴡᴀᴛɴᴇ ᴢʏᴄɪᴇ ɪ ɴɪᴇ ᴢᴀᴡꜱᴢᴇ ᴅᴏꜱᴛᴀɴɪᴇꜱᴢ ᴏᴅ ʀᴀᴢᴜ ᴏᴅᴘᴏᴡɪᴇᴅᴢ!"""
-    embed = discord.Embed(title="STWÓRZ ZGŁOSZENIE", description=desc, color=THEME_COLOR)
-    await interaction.channel.send(embed=embed, view=TicketView())
-    await interaction.response.send_message("Gotowe", ephemeral=True)
+    e = discord.Embed(title="STWÓRZ ZGŁOSZENIE", description=desc, color=THEME_COLOR)
+    await interaction.channel.send(embed=e, view=TicketView()); await interaction.response.send_message("Gotowe", ephemeral=True)
 
 @bot.tree.command(name="setup_weryfikacja", guild=discord.Object(id=GUILD_ID))
 async def setup_verify(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator: return
-    await interaction.channel.send(embed=discord.Embed(title="Weryfikacja", description="Kliknij.", color=THEME_COLOR), view=VerifyView())
-    await interaction.response.send_message("OK", ephemeral=True)
+    await interaction.channel.send(embed=discord.Embed(title="Weryfikacja", color=THEME_COLOR), view=VerifyView()); await interaction.response.send_message("OK", ephemeral=True)
 
 @bot.tree.command(name="legit", guild=discord.Object(id=GUILD_ID))
 async def legit(interaction: discord.Interaction, rola: discord.Role):
     if not interaction.user.guild_permissions.administrator: return
-    await interaction.channel.send(embed=discord.Embed(title="Opinia", description=f"Rola: {rola.mention}", color=THEME_COLOR), view=RoleLegitView(rola))
-    await interaction.response.send_message("OK", ephemeral=True)
+    await interaction.channel.send(embed=discord.Embed(title="Opinia", description=f"Rola: {rola.mention}", color=THEME_COLOR), view=RoleLegitView(rola)); await interaction.response.send_message("OK", ephemeral=True)
 
 @bot.tree.command(name="pv", guild=discord.Object(id=GUILD_ID))
 async def pv(interaction: discord.Interaction, wiadomosc: str, uzytkownik: discord.Member = None, wszyscy: bool = False):
@@ -411,12 +411,31 @@ async def pv(interaction: discord.Interaction, wiadomosc: str, uzytkownik: disco
 async def create_embed(interaction: discord.Interaction, tytul: str, tresc: str, kolor: str = "#ffffff", plik: discord.Attachment = None, link: str = None):
     if not interaction.user.guild_permissions.administrator: return
     try:
-        embed = discord.Embed(title=tytul, description=tresc.replace("\\n", "\n"), color=int(kolor.replace("#",""),16))
-        if plik: embed.set_image(url=plik.url)
-        elif link: embed.set_image(url=link)
-        await interaction.channel.send(embed=embed); await interaction.response.send_message("OK", ephemeral=True)
+        e = discord.Embed(title=tytul, description=tresc.replace("\\n", "\n"), color=int(kolor.replace("#",""),16))
+        if plik: e.set_image(url=plik.url)
+        elif link: e.set_image(url=link)
+        await interaction.channel.send(embed=e); await interaction.response.send_message("OK", ephemeral=True)
     except: await interaction.response.send_message("Błąd", ephemeral=True)
 
-# Start
+# Admin commands
+@bot.tree.command(name="ban", guild=discord.Object(id=GUILD_ID))
+async def ban(interaction: discord.Interaction, uzytkownik: discord.Member, powod: str="Brak"):
+    if interaction.user.guild_permissions.ban_members: await uzytkownik.ban(reason=powod); await interaction.response.send_message(f"Ban {uzytkownik}")
+@bot.tree.command(name="kick", guild=discord.Object(id=GUILD_ID))
+async def kick(interaction: discord.Interaction, uzytkownik: discord.Member, powod: str="Brak"):
+    if interaction.user.guild_permissions.kick_members: await uzytkownik.kick(reason=powod); await interaction.response.send_message(f"Kick {uzytkownik}")
+@bot.tree.command(name="wycisz", guild=discord.Object(id=GUILD_ID))
+async def mute(interaction: discord.Interaction, uzytkownik: discord.Member, minuty: int, powod: str="Brak"):
+    if interaction.user.guild_permissions.moderate_members: await uzytkownik.timeout(datetime.timedelta(minutes=minuty), reason=powod); await interaction.response.send_message(f"Mute {uzytkownik}")
+@bot.tree.command(name="odcisz", guild=discord.Object(id=GUILD_ID))
+async def unmute(interaction: discord.Interaction, uzytkownik: discord.Member):
+    if interaction.user.guild_permissions.moderate_members: await uzytkownik.timeout(None); await interaction.response.send_message(f"Unmute {uzytkownik}")
+@bot.tree.command(name="unban", guild=discord.Object(id=GUILD_ID))
+async def unban(interaction: discord.Interaction, user_id: str):
+    if interaction.user.guild_permissions.ban_members: 
+        try: await interaction.guild.unban(await bot.fetch_user(int(user_id))); await interaction.response.send_message("Unban")
+        except: await interaction.response.send_message("Błąd")
+
+# START
 keep_alive()
 if TOKEN: bot.run(TOKEN)
