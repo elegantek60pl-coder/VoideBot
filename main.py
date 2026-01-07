@@ -39,7 +39,7 @@ def parse_duration_input(time_str):
     elif unit == 'h': seconds = val * 3600
     elif unit == 'd': seconds = val * 86400
     elif unit == 'r': seconds = val * 31536000
-    elif unit == 's' and time_str.endswith("ms"): seconds = int(time_str[:-2]) * 2592000 # miesiąc
+    elif unit == 's' and time_str.endswith("ms"): seconds = int(time_str[:-2]) * 2592000 
     else: return None
     return seconds
 
@@ -77,7 +77,7 @@ class GiveawayView(discord.ui.View):
         button.label = f"Dołącz ({len(self.participants)})"
         await interaction.message.edit(view=self)
 
-# 3. KODY RABATOWE - SYSTEM USUWANIA I UŻYWANIA
+# 3. KODY RABATOWE
 class DiscountModal(discord.ui.Modal, title="Wpisz kod rabatowy"):
     code_input = discord.ui.TextInput(label="Kod", placeholder="Np. LATO2024")
     async def on_submit(self, interaction: discord.Interaction):
@@ -93,26 +93,21 @@ class DiscountModal(discord.ui.Modal, title="Wpisz kod rabatowy"):
             else: await interaction.response.send_message("❌ Ten kod wygasł.", ephemeral=True)
         else: await interaction.response.send_message("❌ Nieprawidłowy kod.", ephemeral=True)
 
-# --- KLASA DO USUWANIA KODÓW (DYNAMICZNE PRZYCISKI) ---
 class DeleteCodeButton(discord.ui.Button):
     def __init__(self, code_name):
         super().__init__(label=f"Usuń {code_name}", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id=f"del_{code_name}")
         self.code_name = code_name
-
     async def callback(self, interaction: discord.Interaction):
         if self.code_name in active_codes:
             del active_codes[self.code_name]
             await interaction.response.send_message(f"✅ Usunięto kod: **{self.code_name}**", ephemeral=True)
-            # Odświeżamy widok (usuwamy przycisk)
             self.view.remove_item(self)
             await interaction.message.edit(view=self.view)
-        else:
-            await interaction.response.send_message("❌ Ten kod już nie istnieje.", ephemeral=True)
+        else: await interaction.response.send_message("❌ Ten kod już nie istnieje.", ephemeral=True)
 
 class DeleteCodeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        # Dla każdego aktywnego kodu tworzymy przycisk
         for code in active_codes:
             self.add_item(DeleteCodeButton(code))
 
@@ -121,19 +116,12 @@ class TicketControlView(discord.ui.View):
     def __init__(self, is_order=False):
         super().__init__(timeout=None)
         self.is_order = is_order
-        
-        # LOGIKA: Usuwamy przycisk "Użyj Kodu", jeśli to NIE jest zamówienie
         if not self.is_order:
-            # Szukamy przycisku po custom_id i usuwamy go z listy
-            button_to_remove = None
             for child in self.children:
                 if hasattr(child, "custom_id") and child.custom_id == "use_code":
-                    button_to_remove = child
+                    self.remove_item(child)
                     break
-            if button_to_remove:
-                self.remove_item(button_to_remove)
 
-    # Przycisk kodu (domyślnie zdefiniowany, usuwany w __init__ jeśli trzeba)
     @discord.ui.button(label="Użyj Kodu", style=discord.ButtonStyle.secondary, emoji="🏷️", custom_id="use_code", row=0)
     async def discount_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(DiscountModal())
@@ -162,7 +150,7 @@ class TicketControlView(discord.ui.View):
 class TicketSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Zamówienie", description="Chcę złożyć zamówienie", emoji="🛒", value="order"),
+            discord.SelectOption(label="Zamówienie", description="Chcesz złożyć zamówienie", emoji="🛒", value="order"),
             discord.SelectOption(label="Pomoc", description="Potrzebuję pomocy", emoji="❓", value="help"),
             discord.SelectOption(label="Pytanie", description="Mam pytanie", emoji="❔", value="question"),
             discord.SelectOption(label="Problem z pluginem", description="Błąd w pluginie", emoji="🔌", value="plugin"),
@@ -176,8 +164,6 @@ class TicketSelect(discord.ui.Select):
         if not category: return await interaction.response.send_message("❌ Błąd kategorii.", ephemeral=True)
 
         selected = self.values[0]
-        
-        # Nazewnictwo
         prefix_map = {"order": "zamowienie", "help": "pomoc", "question": "pytanie", "plugin": "plugin", "other": "inne"}
         prefix = prefix_map.get(selected, "ticket")
         
@@ -197,13 +183,10 @@ class TicketSelect(discord.ui.Select):
         await interaction.response.send_message(f"✅ Utworzono zgłoszenie: {ticket_channel.mention}", ephemeral=True)
         
         labels = {"order": "Zamówienie", "help": "Pomoc", "question": "Pytanie", "plugin": "Problem z pluginem", "other": "Inne"}
-        
         embed = discord.Embed(title="Zgłoszenie", description=f"Witaj {interaction.user.mention}!\nOpisz sprawę.\nKategoria: **{labels.get(selected)}**", color=THEME_COLOR)
         
-        # KLUCZOWE: PRZEKAZUJEMY INFO CZY TO ZAMÓWIENIE
         is_order_ticket = (selected == "order")
         view = TicketControlView(is_order=is_order_ticket)
-        
         await ticket_channel.send(embed=embed, view=view)
 
 class TicketView(discord.ui.View):
@@ -247,7 +230,6 @@ class AccessView(discord.ui.View):
     async def deny(self, interaction: discord.Interaction, button):
         if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔ Tylko Admin", ephemeral=True)
         await interaction.response.send_modal(RejectModal(self, self.target_user_id))
-
 
 # 7. LEGIT CHECK
 class LegitModal(discord.ui.Modal, title="Oceń transakcję"):
@@ -300,7 +282,6 @@ bot = MyBot()
 
 # --- KOMENDY ---
 
-# 1. KONKURS
 @bot.tree.command(name="konkurs", description="[ADMIN] Rozpocznij giveaway", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(nagroda="Co można wygrać?", czas="Ile czasu? (np. 1h, 30m)", ile_osob="Ilu zwycięzców?")
 async def konkurs(interaction: discord.Interaction, nagroda: str, czas: str, ile_osob: int = 1):
@@ -331,38 +312,26 @@ async def konkurs(interaction: discord.Interaction, nagroda: str, czas: str, ile
     view.children[0].disabled=True
     await msg.edit(embed=embed, view=view)
 
-# 2. KODY RABATOWE - USTAWIENIE
 @bot.tree.command(name="ustaw_kod", description="[ADMIN] Dodaj kod rabatowy", guild=discord.Object(id=GUILD_ID))
 async def ustaw_kod(interaction: discord.Interaction, kod: str, czas: str, procent: int):
     if not interaction.user.guild_permissions.administrator: return
     seconds = parse_duration_input(czas)
     if not seconds: return await interaction.response.send_message("❌ Zły czas", ephemeral=True)
-    
     active_codes[kod] = {"percent": procent, "expires": datetime.datetime.now().timestamp() + seconds}
-    
     e = discord.Embed(title="✅ Kod Rabatowy", color=discord.Color.green())
     e.add_field(name="Kod", value=kod); e.add_field(name="Zniżka", value=f"{procent}%")
     await interaction.response.send_message(embed=e)
 
-# 3. KODY RABATOWE - USUWANIE
 @bot.tree.command(name="usun_kod", description="[ADMIN] Panel usuwania kodów", guild=discord.Object(id=GUILD_ID))
 async def usun_kod(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
-    
-    if not active_codes:
-        return await interaction.response.send_message("🚫 Nie ma żadnych aktywnych kodów.", ephemeral=True)
-    
-    embed = discord.Embed(title="🗑️ Panel usuwania kodów", description="Kliknij przycisk, aby usunąć kod.", color=discord.Color.red())
-    # Wypisujemy listę
+    if not active_codes: return await interaction.response.send_message("🚫 Brak aktywnych kodów.", ephemeral=True)
+    embed = discord.Embed(title="🗑️ Usuwanie kodów", description="Kliknij, aby usunąć.", color=discord.Color.red())
     desc = ""
-    for c, d in active_codes.items():
-        desc += f"• **{c}** ({d['percent']}%) - Wygasa <t:{int(d['expires'])}:R>\n"
-    embed.add_field(name="Aktywne kody:", value=desc)
-    
-    view = DeleteCodeView()
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    for c, d in active_codes.items(): desc += f"• **{c}** ({d['percent']}%) - <t:{int(d['expires'])}:R>\n"
+    embed.add_field(name="Lista:", value=desc)
+    await interaction.response.send_message(embed=embed, view=DeleteCodeView(), ephemeral=True)
 
-# 4. POZOSTAŁE
 @bot.tree.command(name="nadaj", guild=discord.Object(id=GUILD_ID))
 async def nadaj(interaction: discord.Interaction, uzytkownik: discord.Member, zrzut_ekranu: discord.Attachment):
     if not interaction.user.guild_permissions.administrator: return
@@ -408,13 +377,21 @@ async def pv(interaction: discord.Interaction, wiadomosc: str, uzytkownik: disco
         except: await interaction.followup.send("Blokada PW")
 
 @bot.tree.command(name="stworz_embed", guild=discord.Object(id=GUILD_ID))
-async def create_embed(interaction: discord.Interaction, tytul: str, tresc: str, kolor: str = "#ffffff", plik: discord.Attachment = None, link: str = None):
+async def create_embed(interaction: discord.Interaction, tytul: str, tresc: str, kolor: str = "#ffffff", plik: discord.Attachment = None, link_do_obrazka: str = None):
     if not interaction.user.guild_permissions.administrator: return
     try:
         e = discord.Embed(title=tytul, description=tresc.replace("\\n", "\n"), color=int(kolor.replace("#",""),16))
-        if plik: e.set_image(url=plik.url)
-        elif link: e.set_image(url=link)
-        await interaction.channel.send(embed=e); await interaction.response.send_message("OK", ephemeral=True)
+        
+        # LOGIKA OBRAZKA (w embedzie)
+        if link_do_obrazka: e.set_image(url=link_do_obrazka)
+
+        # LOGIKA ZAŁĄCZNIKA (plik do pobrania)
+        file_to_send = None
+        if plik:
+            file_to_send = await plik.to_file()
+            
+        await interaction.channel.send(embed=e, file=file_to_send)
+        await interaction.response.send_message("OK", ephemeral=True)
     except: await interaction.response.send_message("Błąd", ephemeral=True)
 
 # Admin commands
