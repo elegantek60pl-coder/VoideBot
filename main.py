@@ -282,6 +282,19 @@ bot = MyBot()
 
 # --- KOMENDY ---
 
+@bot.tree.command(name="clear", description="[ADMIN] Usuń wiadomości z czatu", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(ilosc="Ile wiadomości usunąć?")
+async def clear(interaction: discord.Interaction, ilosc: int):
+    if not interaction.user.guild_permissions.manage_messages:
+        return await interaction.response.send_message("⛔ Brak uprawnień (Zarządzanie wiadomościami).", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True)
+    try:
+        deleted = await interaction.channel.purge(limit=ilosc)
+        await interaction.followup.send(f"🗑️ Usunięto {len(deleted)} wiadomości.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Błąd: {e}", ephemeral=True)
+
 @bot.tree.command(name="konkurs", description="[ADMIN] Rozpocznij giveaway", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(nagroda="Co można wygrać?", czas="Ile czasu? (np. 1h, 30m)", ile_osob="Ilu zwycięzców?")
 async def konkurs(interaction: discord.Interaction, nagroda: str, czas: str, ile_osob: int = 1):
@@ -381,15 +394,9 @@ async def create_embed(interaction: discord.Interaction, tytul: str, tresc: str,
     if not interaction.user.guild_permissions.administrator: return
     try:
         e = discord.Embed(title=tytul, description=tresc.replace("\\n", "\n"), color=int(kolor.replace("#",""),16))
-        
-        # LOGIKA OBRAZKA (w embedzie)
         if link_do_obrazka: e.set_image(url=link_do_obrazka)
-
-        # LOGIKA ZAŁĄCZNIKA (plik do pobrania)
         file_to_send = None
-        if plik:
-            file_to_send = await plik.to_file()
-            
+        if plik: file_to_send = await plik.to_file()
         await interaction.channel.send(embed=e, file=file_to_send)
         await interaction.response.send_message("OK", ephemeral=True)
     except: await interaction.response.send_message("Błąd", ephemeral=True)
