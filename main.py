@@ -395,9 +395,15 @@ async def create_embed(interaction: discord.Interaction, tytul: str, tresc: str,
     try:
         e = discord.Embed(title=tytul, description=tresc.replace("\\n", "\n"), color=int(kolor.replace("#",""),16))
         if link_do_obrazka: e.set_image(url=link_do_obrazka)
-        file_to_send = None
-        if plik: file_to_send = await plik.to_file()
-        await interaction.channel.send(embed=e, file=file_to_send)
+        
+        # 1. NAJPIERW EMBED
+        await interaction.channel.send(embed=e)
+        
+        # 2. POTEM PLIK
+        if plik:
+            file_to_send = await plik.to_file()
+            await interaction.channel.send(file=file_to_send)
+            
         await interaction.response.send_message("OK", ephemeral=True)
     except: await interaction.response.send_message("Błąd", ephemeral=True)
 
